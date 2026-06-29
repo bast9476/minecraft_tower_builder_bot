@@ -1,0 +1,25 @@
+{
+  "host": "craftmc.pl",
+  "port": 25565,
+  "username": "BossCraft",
+  "password": "elo321",
+  "auth": "offline",
+  "needsHub": true,
+  "version": "1.12.2",
+  "floorsToBuild": 5,
+  "storageCoordinates": {
+    "x": -8464,
+    "y": 6,
+    "z": 4049
+  },
+  "blocks": {
+    "base": "sandstone",
+    "sand": "sand",
+    "cactus": "cactus",
+    "ironBars": "iron_bars",
+    "scaffold": "dirt",
+    "ladder": "ladder",
+    "oakLeaves": "leaves"
+  },
+  "farmSize": 5
+}
