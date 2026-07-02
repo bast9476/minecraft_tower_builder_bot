@@ -25,7 +25,7 @@ class Builder {
       const originalDigTime = this.bot.digTime;
       const overriddenDigTime = (b) => {
         const time = originalDigTime.call(this.bot, b);
-        return Math.max(250, time + 150);
+        return Math.max(80, time + 40);
       };
       overriddenDigTime.__isOverridden = true;
       this.bot.digTime = overriddenDigTime;
@@ -152,7 +152,7 @@ class Builder {
 
       if (verified) {
         console.log(`Successfully placed block against ${referenceBlock.name} at ${referenceBlock.position}`);
-        const afterDelay = 3 + Math.floor(Math.random() * 3);
+        const afterDelay = 1 + Math.floor(Math.random() * 2);
         await this.bot.waitForTicks(afterDelay);
         return true;
       } else {
@@ -229,7 +229,7 @@ class Builder {
         }
       }
 
-      const beforeDigDelay = 3 + Math.floor(Math.random() * 3);
+      const beforeDigDelay = 1;
       await this.bot.waitForTicks(beforeDigDelay);
 
       try {
@@ -242,7 +242,7 @@ class Builder {
           this.bot.setControlState('sneak', false);
         }
       }
-      const afterDigDelay = 5 + Math.floor(Math.random() * 3);
+      const afterDigDelay = 1 + Math.floor(Math.random() * 2);
       await this.bot.waitForTicks(afterDigDelay);
     }
   }
@@ -729,8 +729,6 @@ class Builder {
       }
     }
 
-    await this.jumpAndPlace(startY + 2, this.config.blocks.sand);
-
     for (const offset of pillarOffsets) {
       const pos = vec3(basePos.x + offset.dx, startY + 2, basePos.z + offset.dz);
       const block = await this.getBlockSafely(pos);
@@ -814,6 +812,8 @@ class Builder {
         if (placed) await this.bot.waitForTicks(1);
       }
     }
+
+    await this.jumpAndPlace(startY + 2, this.config.blocks.sand);
 
     const sortedDigOffsets = [...pillarOffsets].sort((a, b) => {
       const distA = a.dx * a.dx + a.dz * a.dz;

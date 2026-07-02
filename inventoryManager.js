@@ -164,7 +164,7 @@ class InventoryManager {
             } catch (err) {
               console.error(`Failed to deposit non-essential ${item.name}:`, err.message);
             }
-            await this.bot.waitForTicks(10);
+            await this.bot.waitForTicks(3);
           }
         }
 
@@ -189,7 +189,7 @@ class InventoryManager {
               } catch (err) {
                 console.error(`Failed to deposit excess ${itemRequest.name}:`, err.message);
               }
-              await this.bot.waitForTicks(10);
+              await this.bot.waitForTicks(3);
             }
           }
         }
@@ -220,7 +220,7 @@ class InventoryManager {
             } catch (err) {
               console.error(`Failed to withdraw ${itemRequest.name}:`, err.message);
             }
-            await this.bot.waitForTicks(10);
+            await this.bot.waitForTicks(3);
           }
         }
 
@@ -244,13 +244,13 @@ class InventoryManager {
               } catch (err) {
                 console.error(`Failed to withdraw ${toolName}:`, err.message);
               }
-              await this.bot.waitForTicks(10);
+              await this.bot.waitForTicks(3);
             }
           }
         }
 
         await chest.close();
-        await this.bot.waitForTicks(10);
+        await this.bot.waitForTicks(3);
       } catch (err) {
         console.error(`Failed to interact with chest at ${targetPos}:`, err.message);
       }

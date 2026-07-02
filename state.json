@@ -1,0 +1,16 @@
+{
+  "completedTowers": [
+    {
+      "x": 186,
+      "y": 78,
+      "z": 507
+    }
+  ],
+  "currentTower": {
+    "x": 203,
+    "y": 78,
+    "z": 512
+  },
+  "currentFloor": 0,
+  "currentStep": 0
+}

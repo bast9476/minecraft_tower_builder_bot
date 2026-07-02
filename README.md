@@ -73,7 +73,7 @@ node index.js
 You can control the bot via Minecraft chat commands or through standard input in the console.
 
 ### 1. Chat Commands (Minecraft)
-Only players listed in the owner whitelist (e.g., `apt`, `BossCraftTest`, inside `index.js`) can issue whispers/chat commands:
+Only players listed in the owner whitelist (e.g., `apt`, `Arsenic-23`, `BossCraftTest`, `mateuszzzt` inside `index.js`) can issue whispers/chat commands:
 
 *   **`setup`**:
     *   Teleports the bot to your current location.

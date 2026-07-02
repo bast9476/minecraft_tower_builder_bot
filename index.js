@@ -32,9 +32,9 @@ function initBot() {
   const originalClickWindow = bot.clickWindow;
   bot.clickWindow = async function (slot, mouseButton, mode) {
     if (bot.waitForTicks) {
-      await bot.waitForTicks(4);
+      await bot.waitForTicks(2);
     } else {
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise(resolve => setTimeout(resolve, 80));
     }
     return originalClickWindow.call(bot, slot, mouseButton, mode);
   };
@@ -168,7 +168,7 @@ async function handleChat(message, messagePosition, jsonMsg) {
   if (!match) return;
 
   const sender = match[1];
-  if (sender !== 'apt' && sender !== 'Arsenic-23' && sender !== 'BossCraftTest' && sender !== 'mateuszzzt') {
+  if (sender !== 'apt' && sender !== 'aptttt' && sender !== 'Arsenic-23' && sender !== 'BossCraftTest' && sender !== 'mateuszzzt') {
     return;
   }
 
@@ -203,20 +203,20 @@ async function handleChat(message, messagePosition, jsonMsg) {
       bot.chat('/setblock ~ ~ ~-3 chest');
       await bot.waitForTicks(5);
 
-      bot.chat('/item replace block ~ ~ ~-3 container.0 with sand 64');
-      bot.chat('/item replace block ~ ~ ~-3 container.1 with sand 64');
-      bot.chat('/item replace block ~ ~ ~-3 container.2 with sand 64');
-      bot.chat('/item replace block ~ ~ ~-3 container.3 with cactus 64');
-      bot.chat('/item replace block ~ ~ ~-3 container.4 with cactus 64');
-      bot.chat('/item replace block ~ ~ ~-3 container.5 with cactus 64');
-      bot.chat('/item replace block ~ ~ ~-3 container.6 with iron_bars 64');
-      bot.chat('/item replace block ~ ~ ~-3 container.7 with dirt 64');
-      bot.chat('/item replace block ~ ~ ~-3 container.8 with ladder 64');
-      bot.chat('/item replace block ~ ~ ~-3 container.9 with diamond_shovel 1');
-      bot.chat('/item replace block ~ ~ ~-3 container.10 with diamond_pickaxe 1');
-      bot.chat('/item replace block ~ ~ ~-3 container.11 with oak_leaves 64');
-      bot.chat('/item replace block ~ ~ ~-3 container.12 with oak_leaves 64');
-      bot.chat('/item replace block ~ ~ ~-3 container.13 with iron_bars 64');
+      bot.chat('/replaceitem block ~ ~ ~-3 slot.container.0 sand 64');
+      bot.chat('/replaceitem block ~ ~ ~-3 slot.container.1 sand 64');
+      bot.chat('/replaceitem block ~ ~ ~-3 slot.container.2 sand 64');
+      bot.chat('/replaceitem block ~ ~ ~-3 slot.container.3 cactus 64');
+      bot.chat('/replaceitem block ~ ~ ~-3 slot.container.4 cactus 64');
+      bot.chat('/replaceitem block ~ ~ ~-3 slot.container.5 cactus 64');
+      bot.chat('/replaceitem block ~ ~ ~-3 slot.container.6 iron_bars 64');
+      bot.chat('/replaceitem block ~ ~ ~-3 slot.container.7 dirt 64');
+      bot.chat('/replaceitem block ~ ~ ~-3 slot.container.8 ladder 64');
+      bot.chat('/replaceitem block ~ ~ ~-3 slot.container.9 diamond_shovel 1');
+      bot.chat('/replaceitem block ~ ~ ~-3 slot.container.10 diamond_pickaxe 1');
+      bot.chat('/replaceitem block ~ ~ ~-3 slot.container.11 leaves 64');
+      bot.chat('/replaceitem block ~ ~ ~-3 slot.container.12 leaves 64');
+      bot.chat('/replaceitem block ~ ~ ~-3 slot.container.13 iron_bars 64');
       await bot.waitForTicks(5);
 
       bot.chat('/fill ~-2 ~-1 ~-3 ~8 ~-1 ~3 dirt');
@@ -549,20 +549,20 @@ process.stdin.on('data', (data) => {
         await bot.waitForTicks(5);
         bot.chat('/setblock ~ ~ ~-3 chest');
         await bot.waitForTicks(5);
-        bot.chat('/item replace block ~ ~ ~-3 container.0 with sand 64');
-        bot.chat('/item replace block ~ ~ ~-3 container.1 with sand 64');
-        bot.chat('/item replace block ~ ~ ~-3 container.2 with sand 64');
-        bot.chat('/item replace block ~ ~ ~-3 container.3 with cactus 64');
-        bot.chat('/item replace block ~ ~ ~-3 container.4 with cactus 64');
-        bot.chat('/item replace block ~ ~ ~-3 container.5 with cactus 64');
-        bot.chat('/item replace block ~ ~ ~-3 container.6 with iron_bars 64');
-        bot.chat('/item replace block ~ ~ ~-3 container.7 with dirt 64');
-        bot.chat('/item replace block ~ ~ ~-3 container.8 with ladder 64');
-        bot.chat('/item replace block ~ ~ ~-3 container.9 with diamond_shovel 1');
-        bot.chat('/item replace block ~ ~ ~-3 container.10 with diamond_pickaxe 1');
-        bot.chat('/item replace block ~ ~ ~-3 container.11 with oak_leaves 64');
-        bot.chat('/item replace block ~ ~ ~-3 container.12 with oak_leaves 64');
-        bot.chat('/item replace block ~ ~ ~-3 container.13 with iron_bars 64');
+        bot.chat('/replaceitem block ~ ~ ~-3 slot.container.0 sand 64');
+        bot.chat('/replaceitem block ~ ~ ~-3 slot.container.1 sand 64');
+        bot.chat('/replaceitem block ~ ~ ~-3 slot.container.2 sand 64');
+        bot.chat('/replaceitem block ~ ~ ~-3 slot.container.3 cactus 64');
+        bot.chat('/replaceitem block ~ ~ ~-3 slot.container.4 cactus 64');
+        bot.chat('/replaceitem block ~ ~ ~-3 slot.container.5 cactus 64');
+        bot.chat('/replaceitem block ~ ~ ~-3 slot.container.6 iron_bars 64');
+        bot.chat('/replaceitem block ~ ~ ~-3 slot.container.7 dirt 64');
+        bot.chat('/replaceitem block ~ ~ ~-3 slot.container.8 ladder 64');
+        bot.chat('/replaceitem block ~ ~ ~-3 slot.container.9 diamond_shovel 1');
+        bot.chat('/replaceitem block ~ ~ ~-3 slot.container.10 diamond_pickaxe 1');
+        bot.chat('/replaceitem block ~ ~ ~-3 slot.container.11 leaves 64');
+        bot.chat('/replaceitem block ~ ~ ~-3 slot.container.12 leaves 64');
+        bot.chat('/replaceitem block ~ ~ ~-3 slot.container.13 iron_bars 64');
         await bot.waitForTicks(5);
         bot.chat('/fill ~-2 ~-1 ~-3 ~8 ~-1 ~3 dirt');
         bot.chat('/setblock ~4 ~-1 ~ sandstone');

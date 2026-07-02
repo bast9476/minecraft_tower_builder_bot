@@ -1,16 +1,16 @@
 {
-  "host": "craftmc.pl",
-  "port": 25565,
+  "host": "localhost",
+  "port": 52555,
   "username": "BossCraft",
   "password": "elo321",
   "auth": "offline",
-  "needsHub": true,
+  "needsHub": false,
   "version": "1.12.2",
   "floorsToBuild": 5,
   "storageCoordinates": {
-    "x": -8464,
-    "y": 6,
-    "z": 4049
+    "x": 182,
+    "y": 79,
+    "z": 504
   },
   "blocks": {
     "base": "sandstone",
