@@ -86,29 +86,35 @@ class Builder {
   async equipItem(itemName, force = false) {
     const item = this.bot.inventory.items().find(i => i.name === itemName);
     if (!item) {
-      throw new Error(`Item ${itemName} not found in inventory`);
+      // Tagged error so the build loop can restock and resume this floor instead
+      // of counting it as a tower failure. Keep the item name for diagnostics.
+      throw new Error(`out_of_materials:${itemName}`);
     }
 
     const heldItem = this.bot.heldItem;
-    if (!force && heldItem && heldItem.name === itemName) {
+    if (!force && heldItem && heldItem.name === itemName && heldItem.count > 0) {
       return;
     }
 
     const hotbarIndex = item.slot - 36;
     if (hotbarIndex >= 0 && hotbarIndex < 9) {
-
-      const tempSlot = (hotbarIndex + 1) % 9;
-      this.bot.setQuickBarSlot(tempSlot);
-      await this.bot.waitForTicks(2);
       this.bot.setQuickBarSlot(hotbarIndex);
-      await this.bot.waitForTicks(5);
+      await this.bot.waitForTicks(2);
     } else {
       await this.bot.equip(item, 'hand');
-      await this.bot.waitForTicks(5);
+      await this.bot.waitForTicks(3);
+    }
+
+    // Double check we are holding the item, retry if desynced
+    const doubleCheck = this.bot.heldItem;
+    if (!doubleCheck || doubleCheck.name !== itemName || doubleCheck.count <= 0) {
+      console.log(`Warning: Equip double check failed for ${itemName}. Retrying equip...`);
+      await this.bot.equip(item, 'hand');
+      await this.bot.waitForTicks(3);
     }
   }
 
-  async placeBlockSafely(referenceBlock, faceVector) {
+  async placeBlockSafely(referenceBlock, faceVector, opts = {}) {
     try {
       const dest = referenceBlock.position.plus(faceVector);
       const oldBlock = this.bot.blockAt(dest);
@@ -120,25 +126,50 @@ class Builder {
         return true;
       }
 
+      this.bot.setControlState('forward', false);
+      this.bot.setControlState('back', false);
+      this.bot.setControlState('left', false);
+      this.bot.setControlState('right', false);
+      this.bot.setControlState('jump', false);
       this.bot.setControlState('sneak', true);
 
-      await this.leanTowards(dest.x + 0.5, dest.z + 0.5);
+      const leanThreshold = opts.leanThreshold !== undefined ? opts.leanThreshold : 3.5;
+      const leanShift = opts.leanShift !== undefined ? opts.leanShift : 0.42;
+      const distance = this.bot.entity.position.distanceTo(dest);
+      let leaned = false;
+      if (this.currentBasePos && distance > leanThreshold) {
+        await this.leanTowards(dest.x + 0.5, dest.z + 0.5, leanShift);
+        leaned = true;
+      }
 
-      const dx = 0.5 + faceVector.x * 0.5;
-      const dy = 0.5 + faceVector.y * 0.5;
-      const dz = 0.5 + faceVector.z * 0.5;
-      await this.bot.lookAt(referenceBlock.position.offset(dx, dy, dz), true);
+      // Calculate look/cursor position on the target face. For side faces the
+      // component on the face is 1.0 (or 0.0) — right on the block boundary,
+      // which servers/anti-cheat can reject. `delta` (when provided) nudges the
+      // cursor just inside the face so the placement is unambiguous.
+      const delta = opts.delta || vec3(
+        0.5 + faceVector.x * 0.5,
+        0.5 + faceVector.y * 0.5,
+        0.5 + faceVector.z * 0.5
+      );
+      await this.bot.lookAt(referenceBlock.position.offset(delta.x, delta.y, delta.z), true);
 
+      // Wait 1 tick for the rotation packet to be processed by the server
       await this.bot.waitForTicks(1);
 
+      // For side-face placements (iron bars) force mineflayer to look at the exact
+      // face right before sending the packet — top-face placements tolerate
+      // 'ignore', but side faces need the look and place in the same instant.
+      const forceLook = opts.forceLook !== undefined ? opts.forceLook : 'ignore';
       this.bot.swingArm('right');
       await this.bot._genericPlace(referenceBlock, faceVector, {
-        forceLook: 'ignore',
+        forceLook,
+        delta: opts.delta,
         swingArm: undefined
       });
 
+      // Verification loop with 15-tick (750ms) timeout
       let verified = false;
-      for (let t = 0; t < 10; t++) {
+      for (let t = 0; t < 15; t++) {
         await this.bot.waitForTicks(1);
         const newBlock = this.bot.blockAt(dest);
         if (newBlock && newBlock.type !== oldType) {
@@ -147,16 +178,16 @@ class Builder {
         }
       }
 
-      await this.alignToCenter();
+      if (leaned) {
+        await this.alignToCenter();
+      }
       this.bot.setControlState('sneak', false);
 
       if (verified) {
         console.log(`Successfully placed block against ${referenceBlock.name} at ${referenceBlock.position}`);
-        const afterDelay = 1 + Math.floor(Math.random() * 2);
-        await this.bot.waitForTicks(afterDelay);
         return true;
       } else {
-        console.log(`Block placement not verified at ${dest} (500ms timeout)`);
+        console.log(`Block placement not verified at ${dest} (750ms timeout)`);
         return false;
       }
     } catch (err) {
@@ -166,7 +197,7 @@ class Builder {
         await this.alignToCenter();
       } catch (alignErr) {}
       this.bot.setControlState('sneak', false);
-      await this.bot.waitForTicks(5);
+      await this.bot.waitForTicks(2);
       return false;
     }
   }
@@ -195,16 +226,14 @@ class Builder {
       console.log(`Digging block ${block.name} at ${pos}`);
 
       await this.equipToolForBlock(block, true);
-      await this.bot.waitForTicks(1);
 
       const distance = this.bot.entity.position.distanceTo(pos);
       let leaned = false;
-      if (this.currentBasePos && distance > 2.0) {
-
+      if (this.currentBasePos && distance > 4.0) {
         this.bot.setControlState('sneak', true);
         await this.leanTowards(pos.x + 0.5, pos.z + 0.5);
         leaned = true;
-      } else if (distance > 4) {
+      } else if (distance > 4.5) {
         if (walkwayY !== null) {
           await this.navigateToWalkwaySpot(pos, walkwayY);
         } else if (this.currentBasePos) {
@@ -229,9 +258,6 @@ class Builder {
         }
       }
 
-      const beforeDigDelay = 1;
-      await this.bot.waitForTicks(beforeDigDelay);
-
       try {
         await this.customDig(block, vec3(0, 1, 0));
       } catch (err) {
@@ -242,8 +268,6 @@ class Builder {
           this.bot.setControlState('sneak', false);
         }
       }
-      const afterDigDelay = 1 + Math.floor(Math.random() * 2);
-      await this.bot.waitForTicks(afterDigDelay);
     }
   }
 
@@ -263,7 +287,7 @@ class Builder {
     return block;
   }
 
-  async leanTowards(targetX, targetZ) {
+  async leanTowards(targetX, targetZ, shiftDist = 0.42) {
     if (!this.currentBasePos) return;
     const centerX = this.currentBasePos.x + 0.5;
     const centerZ = this.currentBasePos.z + 0.5;
@@ -276,8 +300,6 @@ class Builder {
     let destZ = centerZ;
 
     if (horizontalDist > 2.0) {
-
-      const shiftDist = 0.42;
       destX = centerX + (dx / horizontalDist) * shiftDist;
       destZ = centerZ + (dz / horizontalDist) * shiftDist;
     }
@@ -618,6 +640,229 @@ class Builder {
   async getWalkwayStandingPosition(pos, walkwayY) {
     return pos;
   }
+
+  // ---------------------------------------------------------------------------
+  // Layer-completion helpers.
+  //
+  // Every layer of a floor is placed against the layer directly below it. If a
+  // single block is missed, the block above it loses its reference and gets
+  // skipped too, cascading up the whole column. These helpers guarantee a layer
+  // is 100% complete (via bounded repair rounds) before the caller moves on, so
+  // no cascade can ever start. Nothing is skipped silently: any block that
+  // remains missing after all rounds is logged with its exact offset.
+  // ---------------------------------------------------------------------------
+
+  // Place `itemName` at every `offset` on plane Y, each against the block below
+  // it. Re-scans and re-places until the layer is complete or rounds run out.
+  async placeVerticalLayer(basePos, y, offsets, itemName, opts = {}) {
+    const maxRounds = opts.maxRounds || 4;
+    const attemptsPerBlock = opts.attemptsPerBlock || 5;
+    const label = `[LAYER ${itemName} @Y=${y}]`;
+
+    let prevMissingCount = -1;
+    for (let round = 1; round <= maxRounds; round++) {
+      let placedCount = 0;
+      const missing = [];
+      const missingRef = [];
+
+      for (const offset of offsets) {
+        const dest = vec3(basePos.x + offset.dx, y, basePos.z + offset.dz);
+
+        const existing = this.bot.blockAt(dest);
+        if (existing && existing.name === itemName) {
+          placedCount++;
+          continue;
+        }
+
+        const refBlock = await this.getBlockSafely(dest.offset(0, -1, 0));
+        if (!refBlock || refBlock.name === 'air') {
+          missing.push(offset);
+          missingRef.push(offset);
+          continue;
+        }
+
+        let placed = false;
+        let attempts = 0;
+        while (!placed && attempts < attemptsPerBlock) {
+          await this.equipItem(itemName);
+          placed = await this.placeBlockSafely(refBlock, vec3(0, 1, 0));
+          attempts++;
+        }
+
+        if (placed) placedCount++;
+        else missing.push(offset);
+      }
+
+      console.log(`${label} round ${round}: ${placedCount}/${offsets.length} placed, ${missing.length} missing`);
+      if (missingRef.length > 0) {
+        console.log(`${label} note: ${missingRef.length} block(s) had a MISSING reference below: ${missingRef.map(o => `(${o.dx},${o.dz})`).join(', ')}`);
+      }
+
+      if (missing.length === 0) return { ok: true, missing: [] };
+
+      // Stop early if a full round made no progress (avoids spinning forever).
+      if (missing.length === prevMissingCount) {
+        console.log(`${label} no progress in round ${round}; stopping repair rounds.`);
+        break;
+      }
+      prevMissingCount = missing.length;
+    }
+
+    const stillMissing = [];
+    for (const offset of offsets) {
+      const b = this.bot.blockAt(vec3(basePos.x + offset.dx, y, basePos.z + offset.dz));
+      if (!b || b.name !== itemName) stillMissing.push(offset);
+    }
+    if (stillMissing.length > 0) {
+      console.log(`${label} WARNING: ${stillMissing.length} block(s) STILL MISSING after ${maxRounds} rounds: ${stillMissing.map(o => `(${o.dx},${o.dz})`).join(', ')}`);
+      return { ok: false, missing: stillMissing };
+    }
+    return { ok: true, missing: [] };
+  }
+
+  // Place iron bars at every `offset` on plane Y against the best horizontally
+  // adjacent sand block (picking the neighbor facing the bot for reach). Same
+  // bounded repair-round structure as placeVerticalLayer.
+  async placeIronBarsLayer(basePos, y, ironOffsets, opts = {}) {
+    const maxRounds = opts.maxRounds || 4;
+    const attemptsPerBlock = opts.attemptsPerBlock || 5;
+    const ironName = this.config.blocks.ironBars;
+    const label = `[LAYER ${ironName} @Y=${y}]`;
+    const neighbors = [vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 0, 1), vec3(0, 0, -1)];
+
+    let prevMissingCount = -1;
+    for (let round = 1; round <= maxRounds; round++) {
+      let placedCount = 0;
+      const missing = [];
+
+      for (const offset of ironOffsets) {
+        const pos = vec3(basePos.x + offset.dx, y, basePos.z + offset.dz);
+
+        const existing = this.bot.blockAt(pos);
+        if (existing && existing.name === ironName) {
+          placedCount++;
+          continue;
+        }
+
+        const botPos = this.bot.entity.position;
+        const candidates = [];
+        for (const n of neighbors) {
+          const adj = pos.minus(n);
+          const b = await this.getBlockSafely(adj);
+          if (b && b.name === this.config.blocks.sand) {
+            const toBot = botPos.minus(adj);
+            candidates.push({ refBlock: b, faceVector: n, dot: toBot.dot(n) });
+          }
+        }
+        candidates.sort((a, b) => b.dot - a.dot);
+
+        if (candidates.length === 0) {
+          missing.push(offset);
+          continue;
+        }
+
+        let placed = false;
+        let attempts = 0;
+        while (!placed && attempts < attemptsPerBlock) {
+          // Fall back to the next-best neighbor on repeated failure.
+          const cand = candidates[Math.min(attempts, candidates.length - 1)];
+          const fv = cand.faceVector;
+          // Cursor nudged just inside the face (0.95/0.05 instead of 1.0/0.0).
+          const delta = vec3(
+            0.5 + fv.x * 0.45,
+            0.5 + fv.y * 0.45,
+            0.5 + fv.z * 0.45
+          );
+          await this.equipItem(ironName);
+          placed = await this.placeBlockSafely(cand.refBlock, fv, {
+            delta,
+            forceLook: true,
+            leanThreshold: 2.5,
+            leanShift: 0.5 // lean further out — reach from the raised (higher) stance is tighter
+          });
+          attempts++;
+        }
+
+        if (placed) placedCount++;
+        else missing.push(offset);
+      }
+
+      console.log(`${label} round ${round}: ${placedCount}/${ironOffsets.length} placed, ${missing.length} missing`);
+
+      if (missing.length === 0) return { ok: true, missing: [] };
+      if (missing.length === prevMissingCount) {
+        console.log(`${label} no progress in round ${round}; stopping repair rounds.`);
+        break;
+      }
+      prevMissingCount = missing.length;
+    }
+
+    const stillMissing = [];
+    for (const offset of ironOffsets) {
+      const b = this.bot.blockAt(vec3(basePos.x + offset.dx, y, basePos.z + offset.dz));
+      if (!b || b.name !== ironName) stillMissing.push(offset);
+    }
+    if (stillMissing.length > 0) {
+      console.log(`${label} WARNING: ${stillMissing.length} iron bar(s) STILL MISSING after ${maxRounds} rounds: ${stillMissing.map(o => `(${o.dx},${o.dz})`).join(', ')}`);
+      return { ok: false, missing: stillMissing };
+    }
+    return { ok: true, missing: [] };
+  }
+
+  // Scan the four permanent layers of a finished floor and report completeness.
+  // Report-only: by the time a floor is done the temporary sand references for
+  // the upper layers have been removed, so blocks can't be re-placed from here
+  // anyway — the per-layer repair rounds above are what guarantee completion at
+  // build time. This is the visibility net so a shortfall is never silent.
+  async auditFloor(basePos, floorIndex) {
+    const startY = basePos.y + 1 + (floorIndex * 4);
+    const { sand, cactus, ironBars, oakLeaves } = this.config.blocks;
+
+    const pillarOffsets = [
+      {dx: -3, dz: -3}, {dx: -1, dz: -3}, {dx: 1, dz: -3}, {dx: 3, dz: -3},
+      {dx: -3, dz: -1}, {dx: -1, dz: -1}, {dx: 1, dz: -1}, {dx: 3, dz: -1},
+      {dx: -3, dz:  1}, {dx: -1, dz:  1}, {dx: 1, dz:  1}, {dx: 3, dz:  1},
+      {dx: -3, dz:  3}, {dx: -1, dz:  3}, {dx: 1, dz:  3}, {dx: 3, dz:  3}
+    ];
+    const ironOffsets = [
+      {dx: -2, dz: -3}, {dx: 2, dz: -3}, {dx: -2, dz: -1}, {dx: 2, dz: -1},
+      {dx: -2, dz:  1}, {dx: 2, dz:  1}, {dx: -2, dz:  3}, {dx: 2, dz:  3},
+      {dx: -3, dz: -2}, {dx: -3, dz:  2}, {dx:  3, dz: -2}, {dx:  3, dz:  2}
+    ];
+
+    const countLayer = async (y, offsets, name) => {
+      let present = 0;
+      const missing = [];
+      for (const o of offsets) {
+        const b = await this.getBlockSafely(vec3(basePos.x + o.dx, y, basePos.z + o.dz));
+        if (b && b.name === name) present++;
+        else missing.push(o);
+      }
+      return { present, total: offsets.length, missing };
+    };
+
+    const pillars = await countLayer(startY, pillarOffsets, sand);
+    const cactusR = await countLayer(startY + 1, pillarOffsets, cactus);
+    const ironR = await countLayer(startY + 2, ironOffsets, ironBars);
+    const leavesR = await countLayer(startY + 3, pillarOffsets, oakLeaves);
+
+    console.log(`Floor ${floorIndex + 1} audit: pillars ${pillars.present}/${pillars.total}, cactus ${cactusR.present}/${cactusR.total}, iron ${ironR.present}/${ironR.total}, leaves ${leavesR.present}/${leavesR.total}`);
+
+    const fmt = (o) => `(${o.dx},${o.dz})`;
+    const shortfalls = [];
+    if (pillars.missing.length) shortfalls.push(`sand@${startY}: ${pillars.missing.map(fmt).join(',')}`);
+    if (cactusR.missing.length) shortfalls.push(`cactus@${startY + 1}: ${cactusR.missing.map(fmt).join(',')}`);
+    if (ironR.missing.length) shortfalls.push(`iron@${startY + 2}: ${ironR.missing.map(fmt).join(',')}`);
+    if (leavesR.missing.length) shortfalls.push(`leaves@${startY + 3}: ${leavesR.missing.map(fmt).join(',')}`);
+
+    if (shortfalls.length) {
+      console.log(`Floor ${floorIndex + 1} audit WARNING — incomplete layers: ${shortfalls.join(' | ')}`);
+      return false;
+    }
+    console.log(`Floor ${floorIndex + 1} audit: COMPLETE.`);
+    return true;
+  }
+
   async buildFloor(basePos, floorIndex) {
     this.currentBasePos = basePos;
     const startY = basePos.y + 1 + (floorIndex * 4);
@@ -695,39 +940,12 @@ class Builder {
     await this.equipItem(this.config.blocks.sand);
 
     console.log(`Step 1: Placing sand pillars at Y=${startY}...`);
-    for (const offset of pillarOffsets) {
-      const pos = vec3(basePos.x + offset.dx, startY, basePos.z + offset.dz);
-      let refBlock = await this.getBlockSafely(pos.offset(0, -1, 0));
-      console.log(`  Step 1 - Offset (${offset.dx}, ${offset.dz}) at Y=${startY - 1}: name=${refBlock ? refBlock.name : 'null'}, type=${refBlock ? refBlock.type : 'null'}`);
-      if (!refBlock || refBlock.name === 'air') continue;
-
-      await this.equipItem(this.config.blocks.sand);
-      let placed = false;
-      let attempts = 0;
-      while (!placed && attempts < 3) {
-        placed = await this.placeBlockSafely(refBlock, vec3(0, 1, 0));
-        attempts++;
-      }
-      if (placed) await this.bot.waitForTicks(1);
-    }
+    await this.placeVerticalLayer(basePos, startY, pillarOffsets, this.config.blocks.sand);
 
     await this.jumpAndPlace(startY + 1, this.config.blocks.sand);
-    await this.equipItem(this.config.blocks.cactus);
 
-    for (const offset of pillarOffsets) {
-      const pos = vec3(basePos.x + offset.dx, startY + 1, basePos.z + offset.dz);
-      let refBlock = await this.getBlockSafely(pos.offset(0, -1, 0));
-      if (refBlock && refBlock.name !== 'air') {
-        await this.equipItem(this.config.blocks.cactus);
-        let placed = false;
-        let attempts = 0;
-        while (!placed && attempts < 3) {
-          placed = await this.placeBlockSafely(refBlock, vec3(0, 1, 0));
-          attempts++;
-        }
-        if (placed) await this.bot.waitForTicks(1);
-      }
-    }
+    console.log(`Step 2: Placing cactus at Y=${startY + 1}...`);
+    await this.placeVerticalLayer(basePos, startY + 1, pillarOffsets, this.config.blocks.cactus);
 
     for (const offset of pillarOffsets) {
       const pos = vec3(basePos.x + offset.dx, startY + 2, basePos.z + offset.dz);
@@ -738,56 +956,21 @@ class Builder {
       }
     }
 
-    await this.equipItem(this.config.blocks.sand);
-    for (const offset of pillarOffsets) {
-      const pos = vec3(basePos.x + offset.dx, startY + 2, basePos.z + offset.dz);
-      let refBlock = await this.getBlockSafely(pos.offset(0, -1, 0));
-      if (refBlock && refBlock.name !== 'air') {
-        await this.equipItem(this.config.blocks.sand);
-        let placed = false;
-        let attempts = 0;
-        while (!placed && attempts < 3) {
-          placed = await this.placeBlockSafely(refBlock, vec3(0, 1, 0));
-          attempts++;
-        }
-        if (placed) await this.bot.waitForTicks(1);
-      }
-    }
+    // Temp sand is the reference for BOTH the iron bars (horizontal neighbor)
+    // and the oak leaves (block below), so it must be complete before either.
+    console.log(`Step 3: Placing temporary sand at Y=${startY + 2}...`);
+    await this.placeVerticalLayer(basePos, startY + 2, pillarOffsets, this.config.blocks.sand);
 
-    for (const offset of ironOffsets) {
-      const pos = vec3(basePos.x + offset.dx, startY + 2, basePos.z + offset.dz);
+    // Place iron bars first while the leaves at Y=88 are not placed yet,
+    // ensuring a completely clear line of sight to the Y=87 sand faces.
+    console.log(`Step 4: Placing iron bars at Y=${startY + 2}...`);
+    await this.placeIronBarsLayer(basePos, startY + 2, ironOffsets);
 
-      let refBlock = null;
-      let faceVector = null;
-      const neighbors = [vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 0, 1), vec3(0, 0, -1)];
-      const botPos = this.bot.entity.position;
-      const candidates = [];
-      for (const n of neighbors) {
-        const adj = pos.minus(n);
-        const b = await this.getBlockSafely(adj);
-        if (b && b.name === this.config.blocks.sand) {
-          const toBot = botPos.minus(adj);
-          const dot = toBot.dot(n);
-          candidates.push({ refBlock: b, faceVector: n, dot });
-        }
-      }
-      candidates.sort((a, b) => b.dot - a.dot);
-      if (candidates.length > 0) {
-        refBlock = candidates[0].refBlock;
-        faceVector = candidates[0].faceVector;
-      }
-
-      if (refBlock && faceVector) {
-        await this.equipItem(this.config.blocks.ironBars);
-        let placed = false;
-        let attempts = 0;
-        while (!placed && attempts < 3) {
-          placed = await this.placeBlockSafely(refBlock, faceVector);
-          attempts++;
-        }
-        if (placed) await this.bot.waitForTicks(1);
-      }
-    }
+    // Now raise the bot to feet Y=${startY + 3} (by placing sand in the center column at Y=${startY + 2})
+    // BEFORE placing the leaves ring at Y=${startY + 3}. This brings the corner leaf targets
+    // (distance 4.07 blocks) within comfortable reach of the server's reach check.
+    console.log(`Raising to feet Y=${startY + 3} for leaves placement and cleanup...`);
+    await this.jumpAndPlace(startY + 2, this.config.blocks.sand);
 
     for (const offset of pillarOffsets) {
       const pos = vec3(basePos.x + offset.dx, startY + 3, basePos.z + offset.dz);
@@ -798,22 +981,8 @@ class Builder {
       }
     }
 
-    for (const offset of pillarOffsets) {
-      const pos = vec3(basePos.x + offset.dx, startY + 3, basePos.z + offset.dz);
-      let refBlock = await this.getBlockSafely(pos.offset(0, -1, 0));
-      if (refBlock && refBlock.name !== 'air') {
-        await this.equipItem(this.config.blocks.oakLeaves);
-        let placed = false;
-        let attempts = 0;
-        while (!placed && attempts < 3) {
-          placed = await this.placeBlockSafely(refBlock, vec3(0, 1, 0));
-          attempts++;
-        }
-        if (placed) await this.bot.waitForTicks(1);
-      }
-    }
-
-    await this.jumpAndPlace(startY + 2, this.config.blocks.sand);
+    console.log(`Step 5: Placing oak leaves at Y=${startY + 3}...`);
+    await this.placeVerticalLayer(basePos, startY + 3, pillarOffsets, this.config.blocks.oakLeaves);
 
     const sortedDigOffsets = [...pillarOffsets].sort((a, b) => {
       const distA = a.dx * a.dx + a.dz * a.dz;
@@ -835,7 +1004,12 @@ class Builder {
 
           this.bot.setControlState('sneak', true);
 
-          await this.leanTowards(pos.x + 0.5, pos.z + 0.5);
+          const distance = this.bot.entity.position.distanceTo(pos);
+          let leaned = false;
+          if (distance > 4.0) {
+            await this.leanTowards(pos.x + 0.5, pos.z + 0.5);
+            leaned = true;
+          }
 
           const faceVector = vec3(0, 0, 0);
           if (Math.abs(offset.dx) >= Math.abs(offset.dz)) {
@@ -846,7 +1020,7 @@ class Builder {
 
           const targetLook = pos.offset(0.5, 0.5, 0.5).offset(faceVector.x * 0.5, faceVector.y * 0.5, faceVector.z * 0.5);
           await this.bot.lookAt(targetLook, true);
-          await this.bot.waitForTicks(2);
+          await this.bot.waitForTicks(1);
 
           try {
             console.log(`Digging temporary sand at ${pos} facing ${faceVector} (attempt ${attempt})`);
@@ -857,8 +1031,9 @@ class Builder {
           } catch (err) {
             console.log(`Failed to dig temporary sand at ${pos} (attempt ${attempt}): ${err.message}`);
           } finally {
-
-            await this.alignToCenter();
+            if (leaned) {
+              await this.alignToCenter();
+            }
             this.bot.setControlState('sneak', false);
           }
         }
@@ -889,7 +1064,12 @@ class Builder {
 
         this.bot.setControlState('sneak', true);
 
-        await this.leanTowards(item.pos.x + 0.5, item.pos.z + 0.5);
+        const distance = this.bot.entity.position.distanceTo(item.pos);
+        let leaned = false;
+        if (distance > 4.0) {
+          await this.leanTowards(item.pos.x + 0.5, item.pos.z + 0.5);
+          leaned = true;
+        }
 
         const faceVector = vec3(0, 0, 0);
         if (Math.abs(item.offset.dx) >= Math.abs(item.offset.dz)) {
@@ -900,7 +1080,7 @@ class Builder {
 
         const targetLook = item.pos.offset(0.5, 0.5, 0.5).offset(faceVector.x * 0.5, faceVector.y * 0.5, faceVector.z * 0.5);
         await this.bot.lookAt(targetLook, true);
-        await this.bot.waitForTicks(2);
+        await this.bot.waitForTicks(1);
 
         try {
           console.log(`[CLEANUP] Digging temporary sand at ${item.pos} facing ${faceVector}`);
@@ -908,8 +1088,9 @@ class Builder {
         } catch (err) {
           console.log(`[CLEANUP] Failed to dig temporary sand at ${item.pos}: ${err.message}`);
         } finally {
-
-          await this.alignToCenter();
+          if (leaned) {
+            await this.alignToCenter();
+          }
           this.bot.setControlState('sneak', false);
         }
       }
@@ -917,6 +1098,9 @@ class Builder {
     if (!allTempSandCleared) {
       console.log(`WARNING: Failed to clear all temporary sand blocks at Y=${startY + 2} after 3 cleanup attempts.`);
     }
+
+    // Final visibility net: confirm every permanent block of this floor is present.
+    await this.auditFloor(basePos, floorIndex);
 
     if (floorIndex < this.config.floorsToBuild - 1) {
       console.log(`Climbing to start of next floor...`);
@@ -935,6 +1119,14 @@ class Builder {
       await this.descendAndDig(basePos.y + 1);
     }
     } catch (err) {
+      // Out of materials: don't tear down the center column (descendAndDig needs
+      // a shovel and wastes progress). Bubble up — the loop restocks and re-runs
+      // this same floor, which resumes idempotently (placed blocks are skipped).
+      if (err.message && err.message.startsWith('out_of_materials')) {
+        console.warn(`[BUILD_FLOOR] Out of materials mid-floor (${err.message}). Restocking and resuming this floor.`);
+        try { this.bot.clearControlStates(); } catch (e) {}
+        throw err;
+      }
       console.error(`[BUILD_FLOOR_ERROR] Error during floor building: ${err.message}. Cleaning up and descending...`);
       try {
         await this.descendAndDig(basePos.y + 1);

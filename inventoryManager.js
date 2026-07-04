@@ -7,6 +7,31 @@ class InventoryManager {
     this.navigation = navigation;
   }
 
+  // Count how many of a given item the bot currently holds.
+  countOf(name) {
+    return this.bot.inventory.items()
+      .filter(item => item.name === name)
+      .reduce((acc, item) => acc + item.count, 0);
+  }
+
+  // Realistic worst-case consumption to build ONE floor. Sand is high because
+  // each floor uses 16 pillar + 16 temporary + several center-column climb
+  // blocks (the temporary/center sand is dug out and generally not recovered).
+  getPerFloorNeeds() {
+    return { sand: 44, cactus: 16, ironBars: 12, oakLeaves: 16 };
+  }
+
+  // True if the bot has enough on hand to build at least one full floor.
+  hasMaterialsForFloor() {
+    const need = this.getPerFloorNeeds();
+    const hasShovel = this.bot.inventory.items().some(item => item.name.includes('shovel'));
+    return this.countOf(this.config.blocks.sand) >= need.sand
+      && this.countOf(this.config.blocks.cactus) >= need.cactus
+      && this.countOf(this.config.blocks.ironBars) >= need.ironBars
+      && this.countOf(this.config.blocks.oakLeaves) >= need.oakLeaves
+      && hasShovel;
+  }
+
   getRequiredMaterials() {
     const stateManager = require('./stateManager');
     const currentFloor = stateManager.state.currentFloor || 0;
@@ -23,32 +48,43 @@ class InventoryManager {
     };
   }
 
+  // List which items fall short of building one more floor (for logs/whispers).
+  missingForFloor() {
+    const need = this.getPerFloorNeeds();
+    const missing = [];
+    const s = this.countOf(this.config.blocks.sand);
+    const c = this.countOf(this.config.blocks.cactus);
+    const i = this.countOf(this.config.blocks.ironBars);
+    const l = this.countOf(this.config.blocks.oakLeaves);
+    if (s < need.sand) missing.push(`sand ${s}/${need.sand}`);
+    if (c < need.cactus) missing.push(`cactus ${c}/${need.cactus}`);
+    if (i < need.ironBars) missing.push(`iron ${i}/${need.ironBars}`);
+    if (l < need.oakLeaves) missing.push(`leaves ${l}/${need.oakLeaves}`);
+    if (!this.bot.inventory.items().some(item => item.name.includes('shovel'))) missing.push('shovel');
+    return missing;
+  }
+
   async checkAndRestock() {
-    const sandCount = this.bot.inventory.items().filter(item => item.name === this.config.blocks.sand).reduce((acc, item) => acc + item.count, 0);
-    const cactusCount = this.bot.inventory.items().filter(item => item.name === this.config.blocks.cactus).reduce((acc, item) => acc + item.count, 0);
-    const ironBarsCount = this.bot.inventory.items().filter(item => item.name === this.config.blocks.ironBars).reduce((acc, item) => acc + item.count, 0);
-    const scaffoldCount = this.bot.inventory.items().filter(item => item.name === this.config.blocks.scaffold).reduce((acc, item) => acc + item.count, 0);
-    const ladderCount = this.bot.inventory.items().filter(item => item.name === this.config.blocks.ladder).reduce((acc, item) => acc + item.count, 0);
-    const oakLeavesCount = this.bot.inventory.items().filter(item => item.name === this.config.blocks.oakLeaves).reduce((acc, item) => acc + item.count, 0);
-
-    console.log(`Inventory: ${sandCount} Sand, ${cactusCount} Cactus, ${ironBarsCount} Iron Bars, ${scaffoldCount} Scaffold, ${ladderCount} Ladders, ${oakLeavesCount} Oak Leaves`);
-
-    const stateManager = require('./stateManager');
-    const currentFloor = stateManager.state.currentFloor || 0;
-    const remainingFloors = Math.max(1, this.config.floorsToBuild - currentFloor);
-
-    const minSand = remainingFloors * 20 + 16;
-    const minCactus = remainingFloors * 16;
-    const minIronBars = remainingFloors * 12;
-    const minOakLeaves = remainingFloors * 16;
     const hasShovel = this.bot.inventory.items().some(item => item.name.includes('shovel'));
+    console.log(`Inventory: ${this.countOf(this.config.blocks.sand)} Sand, ${this.countOf(this.config.blocks.cactus)} Cactus, ${this.countOf(this.config.blocks.ironBars)} Iron Bars, ${this.countOf(this.config.blocks.oakLeaves)} Oak Leaves, shovel: ${hasShovel}`);
 
-    if (sandCount < minSand || cactusCount < minCactus || ironBarsCount < minIronBars || oakLeavesCount < minOakLeaves || !hasShovel) {
-      console.log(`Low on materials (min needed: ${minSand} Sand, ${minCactus} Cactus, ${minIronBars} Iron, ${minOakLeaves} Leaves) or missing shovel, restocking...`);
-      const success = await this.restock();
-      if (!success) {
-        throw new Error('Restocking failed! Chest is empty, missing, or unreachable.');
-      }
+    // Only leave to restock when we genuinely CANNOT build the next floor with
+    // what we already hold. A big surplus of some items but a shortage of one
+    // does NOT justify teleporting to the chest every floor — that was the cause
+    // of the endless open/close-chest loop. Build while we can; restock only when
+    // a floor is actually un-buildable.
+    if (this.hasMaterialsForFloor()) {
+      return;
+    }
+
+    console.log(`Not enough to build the next floor (${this.missingForFloor().join(', ')}). Restocking...`);
+    await this.restock();
+
+    // If the chest still can't give us enough for even one floor, it's empty or
+    // unreachable. Signal out_of_materials (with the specific shortfall) so the
+    // build loop waits for a human refill instead of hammering the chests.
+    if (!this.hasMaterialsForFloor()) {
+      throw new Error(`out_of_materials:${this.missingForFloor().join(', ')}`);
     }
   }
 
@@ -136,10 +172,33 @@ class InventoryManager {
       try {
 
         console.log(`Opening chest at ${targetPos}...`);
-        const chest = await Promise.race([
-          this.bot.openContainer(targetBlock),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Chest open timed out')), 2000))
-        ]);
+        // Open with retries and a generous timeout — a single 2s attempt fails on
+        // a laggy server. Each retry steps closer and re-faces the chest, which
+        // matters in dense chest clusters where the bot may end up out of range.
+        let chest = null;
+        const { goals: chestGoals } = require('mineflayer-pathfinder');
+        for (let openAttempt = 1; openAttempt <= 3 && !chest; openAttempt++) {
+          try {
+            if (openAttempt > 1) {
+              await this.navigation.gotoWithTimeout(new chestGoals.GoalNear(targetPos.x, targetPos.y, targetPos.z, 1), 8000);
+              await this.bot.waitForTicks(3);
+            }
+            try { await this.bot.lookAt(targetPos.offset(0.5, 0.5, 0.5), true); } catch (lookErr2) {}
+            await this.bot.waitForTicks(2);
+            chest = await Promise.race([
+              this.bot.openContainer(targetBlock),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('Chest open timed out')), 5000))
+            ]);
+          } catch (openErr) {
+            console.warn(`Chest open attempt ${openAttempt}/3 at ${targetPos} failed: ${openErr.message}`);
+            try { if (this.bot.currentWindow) await this.bot.closeWindow(this.bot.currentWindow); } catch (closeErr) {}
+            await this.bot.waitForTicks(5);
+          }
+        }
+        if (!chest) {
+          console.warn(`Could not open chest at ${targetPos} after 3 attempts. Skipping it.`);
+          continue;
+        }
         console.log(`Opened chest at ${targetPos}`);
         openedChests.push(targetPos);
 

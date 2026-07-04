@@ -39,38 +39,11 @@ function initBot() {
     return originalClickWindow.call(bot, slot, mouseButton, mode);
   };
 
-  navigation = new Navigation(bot);
+  navigation = new Navigation(bot, config);
   inventoryManager = new InventoryManager(bot, config, navigation);
   builder = new Builder(bot, config, navigation);
 
   bot.on('spawn', async () => {
-
-    const passableBlocks = ['chest', 'trapped_chest', 'ender_chest', 'hopper'];
-    for (const name of passableBlocks) {
-      const b = bot.registry.blocksByName[name];
-      if (b) {
-        b.boundingBox = 'empty';
-        b.shapes = [];
-        if (b.stateShapes) b.stateShapes = [];
-        if (b.variations) {
-          for (const v of b.variations) {
-            v.shapes = [];
-          }
-        }
-      }
-    }
-    for (const b of bot.registry.blocksArray) {
-      if (b.name && b.name.includes('shulker_box')) {
-        b.boundingBox = 'empty';
-        b.shapes = [];
-        if (b.stateShapes) b.stateShapes = [];
-        if (b.variations) {
-          for (const v of b.variations) {
-            v.shapes = [];
-          }
-        }
-      }
-    }
 
     const mcData = require('minecraft-data')(bot.version);
     defaultMove = new Movements(bot, mcData);
@@ -159,22 +132,29 @@ async function handleChat(message, messagePosition, jsonMsg) {
   console.log("RECEIVED CHAT:", message);
   if (message.includes(`<${bot.username}>`)) return;
 
-  let match = message.match(/\[([A-Za-z0-9_\-]+)\s*->\s*(?:me|you|BossCraft|BossCraftTest)\]/i);
-  if (!match) match = message.match(/^From\s+([A-Za-z0-9_\-]+):/i);
-  if (!match) match = message.match(/^([A-Za-z0-9_\-]+)\s+whispers:/i);
-  if (!match) match = message.match(/([A-Za-z0-9_\-]+)\s*»/);
-  if (!match) match = message.match(/<([A-Za-z0-9_\-]+)>/);
+  // Match only private messages (whispers), ignoring public chat
+  let match = message.match(/\[([A-Za-z0-9_\-\s\[\]\+]+)\s*->\s*(?:me|you|ja|czokaar)\]/i);
+  if (!match) match = message.match(/^(?:From|Od)\s+([A-Za-z0-9_\-\s\[\]\+]+):/i);
+  if (!match) match = message.match(/^([A-Za-z0-9_\-\s\[\]\+]+)\s+(?:whispers|szepty|szept):/i);
 
   if (!match) return;
 
-  const sender = match[1];
-  if (sender !== 'apt' && sender !== 'aptttt' && sender !== 'Arsenic-23' && sender !== 'BossCraftTest' && sender !== 'mateuszzzt') {
+  const rawSender = match[1].trim();
+  const senderMatch = rawSender.match(/([A-Za-z0-9_]+)$/);
+  const sender = senderMatch ? senderMatch[1] : rawSender;
+
+  if (sender !== 'apt' && sender !== 'aptttt' && sender !== 'Arsenic-23' && sender !== 'BossCraftTest' && sender !== 'mateuszzzt' && sender !== 'czokaar' && sender !== 'BigSplash_Best') {
     return;
   }
 
   let username = sender;
 
   if (message.includes('setup')) {
+    if (config.host !== 'localhost') {
+      whisper(username, "The 'setup' command is only available in local singleplayer/test servers. Please configure storageCoordinates and block types directly in config.json.");
+      return;
+    }
+
     if (isBuilding) {
       isBuilding = false;
       try {
@@ -288,6 +268,12 @@ async function handleChat(message, messagePosition, jsonMsg) {
 
 async function startBuildLoop(ownerUsername = null) {
   const unreachableBases = [];
+  // Track consecutive failures per tower so a persistently failing base can't
+  // trap the loop forever. Keyed by "x,y,z". Reset when a tower completes.
+  const failureCounts = {};
+  const MAX_TOWER_FAILURES = 3;
+  let currentTarget = null;
+  let lastMaterialWhisper = null;
   while (isBuilding) {
     try {
       await inventoryManager.checkAndRestock();
@@ -310,8 +296,14 @@ async function startBuildLoop(ownerUsername = null) {
       }
 
       console.log(`Found base at ${targetBase.x}, ${targetBase.y}, ${targetBase.z}`);
+      currentTarget = targetBase;
 
-      const startFloor = stateManager.state.currentFloor;
+      // Resume the saved floor ONLY if this is the same tower we were building.
+      // Otherwise start at floor 0 — the global currentFloor belongs to a
+      // different tower and would skip the lower floors of this one.
+      const ct = stateManager.state.currentTower;
+      const isSameTower = ct && ct.x === targetBase.x && ct.y === targetBase.y && ct.z === targetBase.z;
+      const startFloor = isSameTower ? stateManager.state.currentFloor : 0;
       try {
         const clearStartY = targetBase.y + (startFloor * 4) + 1;
         console.log(`Clearing build volume for tower at ${targetBase.x}, ${targetBase.y}, ${targetBase.z} starting from Y=${clearStartY}`);
@@ -387,6 +379,12 @@ async function startBuildLoop(ownerUsername = null) {
         if (!isBuilding) break;
 
         console.log(`Building floor ${floor + 1} of ${config.floorsToBuild}`);
+
+        // Top up materials BEFORE each floor so it can't starve mid-build. If this
+        // restocks it may teleport the bot to spawn; the reposition step below
+        // walks it back to the tower (and buildFloor rebuilds the climb column).
+        await inventoryManager.checkAndRestock();
+
         // Stand near tower center to start building floor (if not already inside tower column)
         const targetY = (bot.entity.position.y < targetBase.y + 1 + floor * 4 - 0.5)
           ? (targetBase.y + 1)
@@ -418,10 +416,16 @@ async function startBuildLoop(ownerUsername = null) {
 
         await builder.buildFloor(targetBase, floor);
         stateManager.updateProgress(floor + 1, 0);
+        lastMaterialWhisper = null; // progress made — allow a fresh alert if we run short later
+        // A completed floor is real progress: clear this tower's failure strikes
+        // so only CONSECUTIVE failures (no progress) can trip the skip guard.
+        delete failureCounts[`${targetBase.x},${targetBase.y},${targetBase.z}`];
       }
 
       if (isBuilding && stateManager.state.currentFloor >= config.floorsToBuild) {
         stateManager.markTowerCompleted(targetBase);
+        delete failureCounts[`${targetBase.x},${targetBase.y},${targetBase.z}`];
+        currentTarget = null;
         whisper(ownerUsername, `Tower at ${targetBase.x}, ${targetBase.y}, ${targetBase.z} completed!`);
         console.log('Restocking for the next tower...');
         // Teleport back to spawn to safely access chest level
@@ -431,6 +435,25 @@ async function startBuildLoop(ownerUsername = null) {
       }
 
     } catch (err) {
+      // Material shortage is NOT a tower fault. Wait for a refill and retry the
+      // same tower/floor without counting a failure strike. The floor resumes
+      // idempotently once materials are available again.
+      const isMaterialShortage = err.message &&
+        (err.message.startsWith('out_of_materials') || err.message.includes('Restocking failed'));
+      if (isMaterialShortage) {
+        const detail = err.message.includes(':') ? err.message.slice(err.message.indexOf(':') + 1).trim() : '';
+        console.warn(`Cannot build next floor — short on materials${detail ? ` (${detail})` : ''}. Storage empty/unreachable. Pausing 30s for a refill (tower not penalized)...`);
+        // Only whisper when the shortfall changes, so we don't spam the owner
+        // every 30s while waiting for a refill.
+        const msg = `I can't build — the storage chest is out of: ${detail || 'materials'}. Please refill it and I'll resume automatically.`;
+        if (msg !== lastMaterialWhisper) {
+          whisper(ownerUsername, msg);
+          lastMaterialWhisper = msg;
+        }
+        await new Promise(resolve => setTimeout(resolve, 30000));
+        continue;
+      }
+
       if (err.message === 'previous_floor_missing') {
         console.log('Detected missing previous floor blocks. Rolling back floor progress by 1...');
         stateManager.state.currentFloor = Math.max(0, stateManager.state.currentFloor - 1);
@@ -438,6 +461,23 @@ async function startBuildLoop(ownerUsername = null) {
       } else {
         console.error('Error in build loop:', err);
       }
+
+      // Count consecutive failures on this tower. After too many, give up on it
+      // and move on so the loop can't oscillate on the same base forever.
+      if (currentTarget) {
+        const key = `${currentTarget.x},${currentTarget.y},${currentTarget.z}`;
+        failureCounts[key] = (failureCounts[key] || 0) + 1;
+        console.log(`Tower ${key} failure ${failureCounts[key]}/${MAX_TOWER_FAILURES}.`);
+        if (failureCounts[key] >= MAX_TOWER_FAILURES) {
+          console.warn(`Tower ${key} failed ${failureCounts[key]} times in a row. Skipping it.`);
+          whisper(ownerUsername, `Tower at ${currentTarget.x}, ${currentTarget.y}, ${currentTarget.z} failed ${failureCounts[key]} times and is being skipped. Please check it manually.`);
+          if (!unreachableBases.some(b => b.x === currentTarget.x && b.y === currentTarget.y && b.z === currentTarget.z)) {
+            unreachableBases.push(currentTarget);
+          }
+          currentTarget = null;
+        }
+      }
+
       console.log('An error occurred. Retrying in 5 seconds...');
       await new Promise(resolve => setTimeout(resolve, 5000));
     }
@@ -543,6 +583,10 @@ process.stdin.on('data', (data) => {
     console.log(`Executing setup for player ${username}...`);
     (async () => {
       try {
+        if (config.host !== 'localhost') {
+          console.warn("Setup command is disabled on multiplayer servers.");
+          return;
+        }
         bot.chat(`/tp @s ${username}`);
         await bot.waitForTicks(60);
         bot.chat('/fill ~-3 ~ ~-4 ~9 ~45 ~4 air');

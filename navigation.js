@@ -2,8 +2,9 @@ const { goals } = require('mineflayer-pathfinder');
 const vec3 = require('vec3');
 
 class Navigation {
-  constructor(bot) {
+  constructor(bot, config = null) {
     this.bot = bot;
+    this.config = config;
   }
 
   async escapeSpawn() {
@@ -54,18 +55,24 @@ class Navigation {
         const tx = goal.x;
         const ty = goal.y;
         const tz = goal.z;
-        console.warn(`[NAVIGATION FALLBACK] Pathfinding failed or timed out. Teleporting to target: ${tx}, ${ty}, ${tz}`);
-        this.bot.chat(`/tp @s ${tx.toFixed(2)} ${ty.toFixed(2)} ${tz.toFixed(2)}`);
-        await this.bot.waitForTicks(10); // Wait 0.5s for chunk loads and teleport to finalize
+        const host = this.config ? this.config.host : 'localhost';
+        if (host === 'localhost') {
+          console.warn(`[NAVIGATION FALLBACK] Pathfinding failed or timed out. Teleporting to target: ${tx}, ${ty}, ${tz}`);
+          this.bot.chat(`/tp @s ${tx.toFixed(2)} ${ty.toFixed(2)} ${tz.toFixed(2)}`);
+          await this.bot.waitForTicks(10); // Wait 0.5s for chunk loads and teleport to finalize
 
-        // Verify if teleport actually succeeded by checking distance
-        const currentPos = this.bot.entity.position;
-        const dist = Math.sqrt(Math.pow(currentPos.x - tx, 2) + Math.pow(currentPos.z - tz, 2));
-        if (dist < 3.0) {
-          console.log(`[NAVIGATION FALLBACK] Teleport verified. Distance to target: ${dist.toFixed(2)}`);
-          return true;
+          // Verify if teleport actually succeeded by checking distance
+          const currentPos = this.bot.entity.position;
+          const dist = Math.sqrt(Math.pow(currentPos.x - tx, 2) + Math.pow(currentPos.z - tz, 2));
+          if (dist < 3.0) {
+            console.log(`[NAVIGATION FALLBACK] Teleport verified. Distance to target: ${dist.toFixed(2)}`);
+            return true;
+          } else {
+            console.error(`[NAVIGATION FALLBACK] Teleport failed. Bot is still at ${currentPos}, target was ${tx}, ${ty}, ${tz}`);
+            return false;
+          }
         } else {
-          console.error(`[NAVIGATION FALLBACK] Teleport failed. Bot is still at ${currentPos}, target was ${tx}, ${ty}, ${tz}`);
+          console.warn(`[NAVIGATION] Pathfinding failed or timed out to target: ${tx}, ${ty}, ${tz}. Teleport fallback skipped (multiplayer).`);
           return false;
         }
       }
